@@ -2,6 +2,7 @@ process.on('uncaughtException', err => console.error('P:', err.message));
 process.on('unhandledRejection', r => console.error('R:', r));
 
 const express = require('express');
+const QRCode = require('qrcode');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const axios = require('axios');
 const FormData = require('form-data');
@@ -31,6 +32,8 @@ app.use(express.json());
 let statusText = 'מתאתחל...';
 let pCode = null;
 let pPhone = '';
+let qrImg = null;
+let isRequestingCode = false;
 const logs = [];
 
 function log(m) {
@@ -42,7 +45,7 @@ function log(m) {
 
 app.get('/', (req, res) => {
   const ok = statusText.includes('מחובר');
-  res.send(`<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">${!ok && pPhone && !pCode ? '<meta http-equiv="refresh" content="3">' : ''}<title>קו קולי</title><style>body{font-family:sans-serif;background:#f0f2f5;padding:15px;margin:0;text-align:center}.c{background:#fff;border-radius:14px;padding:20px;max-width:440px;margin:0 auto 15px;box-shadow:0 3px 10px rgba(0,0,0,.08)}h1{color:#128C7E;font-size:19px}.s{display:inline-block;padding:5px 12px;border-radius:20px;font-weight:bold;margin:8px 0;background:${ok?'#e8f5e9':'#fff8e1'};color:${ok?'#2e7d32':'#f57f17'}}.b{background:#e0f2fe;border:2px dashed #0284c7;padding:12px;border-radius:10px;margin:12px 0}.cd{font-size:32px;font-weight:bold;color:#0369a1;background:#fff;padding:8px;border-radius:6px;margin:10px 0}input{width:75%;padding:10px;font-size:16px;border:1px solid #ccc;border-radius:6px;text-align:center}button{background:#128C7E;color:#fff;border:none;padding:10px 20px;font-size:15px;font-weight:bold;border-radius:6px;margin-top:8px;cursor:pointer}.l{text-align:right;font-size:12px;max-height:220px;overflow-y:auto;background:#263238;color:#eceff1;padding:10px;border-radius:8px;font-family:monospace}</style></head><body><div class="c"><h1>📞 גשר וואטסאפ לקו קולי</h1><p style="color:#666;font-size:13px;margin:0">קו פעיל: 077-2290423</p><div class="s">● ${statusText}</div>${!ok ? `<div class="b"><h3 style="margin:0 0 5px;color:#0369a1">🔑 חיבור וואטסאפ</h3><form method="POST" action="/pair"><input type="tel" name="phone" placeholder="0556723061" required value="${pPhone}"><br><button type="submit">קבל קוד לוואטסאפ</button></form>${pCode ? `<div style="margin-top:12px"><p style="font-weight:bold;margin:0;color:#0284c7">הקוד שלך:</p><div class="cd">${pCode}</div><p style="font-size:12px;margin:0">בוואטסאפ > מכשירים מקושרים > קשר מכשיר > קישור באמצעות מספר הטלפון</p></div>` : pPhone ? '<p style="color:#0284c7;font-weight:bold;margin:10px 0">⏳ מבקש קוד מוואטסאפ...</p>' : ''}</div>` : '<div style="padding:15px 0"><span style="font-size:36px">🎉</span><h3 style="margin:5px 0">המערכת מחוברת ופועלת 24/7!</h3></div>'}</div><div class="c"><h4 style="text-align:right;margin:0 0 8px">יומן פעילות</h4><div class="l">${logs.map(x=>`<div>${x}</div>`).join('')||'ממתין...'}</div></div></body></html>`);
+  res.send(`<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">${!ok && pPhone && !pCode ? '<meta http-equiv="refresh" content="4">' : ''}<title>קו קולי</title><style>body{font-family:sans-serif;background:#f0f2f5;padding:15px;margin:0;text-align:center}.c{background:#fff;border-radius:14px;padding:20px;max-width:440px;margin:0 auto 15px;box-shadow:0 3px 10px rgba(0,0,0,.08)}h1{color:#128C7E;font-size:19px}.s{display:inline-block;padding:5px 12px;border-radius:20px;font-weight:bold;margin:8px 0;background:${ok?'#e8f5e9':'#fff8e1'};color:${ok?'#2e7d32':'#f57f17'}}.b{background:#e0f2fe;border:2px dashed #0284c7;padding:12px;border-radius:10px;margin:12px 0}.cd{font-size:32px;font-weight:bold;color:#0369a1;background:#fff;padding:8px;border-radius:6px;margin:10px 0}input{width:75%;padding:10px;font-size:16px;border:1px solid #ccc;border-radius:6px;text-align:center}button{background:#128C7E;color:#fff;border:none;padding:10px 20px;font-size:15px;font-weight:bold;border-radius:6px;margin-top:8px;cursor:pointer}.l{text-align:right;font-size:12px;max-height:220px;overflow-y:auto;background:#263238;color:#eceff1;padding:10px;border-radius:8px;font-family:monospace}</style></head><body><div class="c"><h1>📞 גשר וואטסאפ לקו קולי</h1><p style="color:#666;font-size:13px;margin:0">קו פעיל: 077-2290423</p><div class="s">● ${statusText}</div>${!ok ? `<div class="b"><h3 style="margin:0 0 5px;color:#0369a1">🔑 חיבור וואטסאפ</h3><form method="POST" action="/pair"><input type="tel" name="phone" placeholder="0556723061" required value="${pPhone}"><br><button type="submit">קבל קוד לוואטסאפ</button></form>${pCode ? `<div style="margin-top:12px"><p style="font-weight:bold;margin:0;color:#0284c7">הקוד שלך:</p><div class="cd">${pCode}</div><p style="font-size:12px;margin:0">בוואטסאפ > מכשירים מקושרים > קשר מכשיר > קישור באמצעות מספר הטלפון</p></div>` : pPhone ? '<p style="color:#0284c7;font-weight:bold;margin:10px 0">⏳ מייצר קוד... הדף יתרענן בעוד מספר שניות...</p>' : ''}</div>${qrImg ? `<details style="margin-top:10px;font-size:12px;color:#666"><summary>מעדיף לסרוק QR? לחץ כאן</summary><img src="${qrImg}" style="max-width:200px;margin-top:8px"></details>` : ''}` : '<div style="padding:15px 0"><span style="font-size:36px">🎉</span><h3 style="margin:5px 0">המערכת מחוברת ופועלת 24/7!</h3></div>'}</div><div class="c"><h4 style="text-align:right;margin:0 0 8px">יומן פעילות</h4><div class="l">${logs.map(x=>`<div>${x}</div>`).join('')||'ממתין...'}</div></div></body></html>`);
 });
 
 app.post('/pair', (req, res) => {
@@ -50,18 +53,25 @@ app.post('/pair', (req, res) => {
   if (ph.startsWith('05')) ph = '972' + ph.substring(1);
   pPhone = req.body.phone;
   pCode = null;
+
   log(`מבקש קוד עבור ${ph}...`);
   res.redirect('/');
+
+  if (isRequestingCode) return;
+  isRequestingCode = true;
+
   setTimeout(async () => {
     try {
       if (client && client.requestPairingCode) {
         pCode = await client.requestPairingCode(ph);
-        log(`✅ קוד קישור: ${pCode}`);
+        log(`✅ קוד קישור התקבל בהצלחה: ${pCode}`);
       }
     } catch (e) {
       log(`שגיאה בקוד: ${e.message}`);
+    } finally {
+      isRequestingCode = false;
     }
-  }, 100);
+  }, 200);
 });
 
 app.listen(CONFIG.port, '0.0.0.0', () => log(`שרת זמין בפורט ${CONFIG.port}`));
@@ -199,8 +209,23 @@ const client = new Client({
   authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
   puppeteer: {
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process']
+    protocolTimeout: 120000,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process'
+    ]
   }
+});
+
+client.on('qr', (qr) => {
+  QRCode.toDataURL(qr, (err, url) => {
+    if (!err) qrImg = url;
+  });
 });
 
 client.on('ready', async () => {
