@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: whatsapp-to-ivr
+    env: docker
+    plan: free
+    region: frankfurt
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: TARGET_GROUPS
+        value: הפרגוד,חדשות,נייעס,מבזקים
+      - key: YEMOT_USERNAME
+        value: 0772290423
+      - key: YEMOT_PASSWORD
+        value: 217056
