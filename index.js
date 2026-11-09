@@ -28,8 +28,12 @@ const CONFIG = {
 if (!fs.existsSync(CONFIG.tempDir)) fs.mkdirSync(CONFIG.tempDir, { recursive: true });
 
 const app = express();
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+
 let serverStatus = 'מתאתחל... מחכה לחיבור וואטסאפ';
 let currentQrDataUrl = null;
+let currentPairingCode = null;
 const activityLogs = [];
 
 function addLog(msg) {
@@ -41,12 +45,25 @@ function addLog(msg) {
 
 app.get('/', (req, res) => {
   const isConnected = serverStatus.includes('מחובר');
-  res.send(`<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ניהול קו קולי</title><style>body{font-family:sans-serif;background:#f0f2f5;padding:15px;margin:0}.card{background:#fff;border-radius:16px;padding:20px;max-width:480px;margin:0 auto 20px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,.08)}h1{color:#128C7E;font-size:20px}.status{padding:6px 14px;border-radius:20px;font-weight:bold;margin:10px 0;display:inline-block;background:${isConnected?'#e8f5e9':'#fff8e1'};color:${isConnected?'#2e7d32':'#f57f17'}}.qr-box img{max-width:250px;border-radius:12px;border:2px solid #ddd}.logs{text-align:right;font-size:13px;max-height:250px;overflow-y:auto;background:#263238;color:#eceff1;padding:12px;border-radius:10px;font-family:monospace}</style></head><body><div class="card"><h1>📞 גשר וואטסאפ לקו קולי</h1><p style="color:#666;font-size:14px">קו פעיל: 077-2290423</p><div class="status">● ${serverStatus}</div>${!isConnected&&currentQrDataUrl?`<div class="qr-box"><p>סרוק קוד לחיבור וואטסאפ:</p><img src="${currentQrDataUrl}"></div>`:''}${isConnected?'<div style="padding:20px 0"><span style="font-size:40px">🎉</span><h3>המערכת פעילה ומאזינה!</h3></div>':''}</div><div class="card"><h3 style="text-align:right">יומן פעילות</h3><div class="logs">${activityLogs.map(l=>`<div>[${l.time}] ${l.msg}</div>`).join('')||'ממתין לפעולות...'}</div></div></body></html>`);
+  res.send(`<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ניהול קו קולי</title><style>body{font-family:sans-serif;background:#f0f2f5;padding:15px;margin:0}.card{background:#fff;border-radius:16px;padding:20px;max-width:480px;margin:0 auto 20px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,.08)}h1{color:#128C7E;font-size:20px}.status{padding:6px 14px;border-radius:20px;font-weight:bold;margin:10px 0;display:inline-block;background:${isConnected?'#e8f5e9':'#fff8e1'};color:${isConnected?'#2e7d32':'#f57f17'}}.box{background:#e0f2fe;border:2px dashed #0284c7;padding:15px;border-radius:12px;margin:15px 0}.code{font-size:32px;font-weight:800;letter-spacing:4px;color:#0369a1;background:#fff;padding:10px;border-radius:8px;margin:10px 0}input{width:80%;padding:12px;font-size:16px;border:1px solid #ccc;border-radius:8px;text-align:center;margin-bottom:10px}button{background:#128C7E;color:#fff;border:none;padding:12px 24px;font-size:16px;font-weight:bold;border-radius:8px;cursor:pointer}.logs{text-align:right;font-size:13px;max-height:250px;overflow-y:auto;background:#263238;color:#eceff1;padding:12px;border-radius:10px;font-family:monospace}</style></head><body><div class="card"><h1>📞 גשר וואטסאפ לקו קולי</h1><p style="color:#666;font-size:14px">קו פעיל: 077-2290423</p><div class="status">● ${serverStatus}</div>${!isConnected?`<div class="box"><h3 style="margin-top:0;color:#0369a1">🔑 חיבור בלי מצלמה ובלי חברים!</h3><p style="font-size:13px">הזן את מספר הטלפון שלך לקבלת קוד:</p><form method="POST" action="/pair"><input type="tel" name="phone" placeholder="0501234567" required value="${req.query.phone||''}"><br><button type="submit">קבל קוד לוואטסאפ</button></form>${currentPairingCode?`<div style="margin-top:15px"><p style="font-weight:bold;color:#0284c7">הקוד שלך:</p><div class="code">${currentPairingCode}</div><p style="font-size:13px;text-align:right">1. פתח וואטסאפ > הגדרות > מכשירים מקושרים > קשר מכשיר.<br>2. לחץ למטה על <b>"קישור באמצעות מספר הטלפון"</b>.<br>3. הקלד את הקוד <b>${currentPairingCode}</b>.</p></div>`:''}</div>`:''}</div><div class="card"><h3 style="text-align:right">יומן פעילות</h3><div class="logs">${activityLogs.map(l=>`<div>[${l.time}] ${l.msg}</div>`).join('')||'ממתין...'}</div></div></body></html>`);
 });
 
-app.listen(CONFIG.port, () => {
-  addLog(`שרת האינטרנט פעיל על פורט ${CONFIG.port}`);
+app.post('/pair', async (req, res) => {
+  let phone = req.body.phone || '';
+  phone = phone.replace(/\D/g, '');
+  if (phone.startsWith('05')) phone = '972' + phone.substring(1);
+  try {
+    addLog(`מבקש קוד קישור עבור ${phone}...`);
+    const code = await client.requestPairingCode(phone);
+    currentPairingCode = code;
+    addLog(`קוד קישור התקבל: ${code}`);
+  } catch(e) {
+    addLog(`שגיאה בבקשת קוד: ${e.message}`);
+  }
+  res.redirect(`/?phone=${req.body.phone||''}`);
 });
+
+app.listen(CONFIG.port, () => addLog(`שרת פעיל על פורט ${CONFIG.port}`));
 
 class YemotClient {
   constructor() { this.token = ''; this.counters = {}; }
@@ -142,7 +159,7 @@ async function syncGroupsAlphabetically(allChats) {
     matched.sort((a, b) => a.localeCompare(b, 'he'));
     groupsMap = matched.map((name, i) => ({ name, extension: (i + 1).toString(), recordingExtension: `${i + 1}/9` }));
   }
-  addLog('השלוחות מוינו לפי א-ב: ' + groupsMap.map(g => `${g.extension}=${g.name}`).join(', '));
+  addLog('שלוחות לפי א-ב: ' + groupsMap.map(g => `${g.extension}=${g.name}`).join(', '));
   try {
     for (const g of groupsMap) {
       const p = path.join(CONFIG.tempDir, `M0000_${g.extension}.wav`);
@@ -170,20 +187,9 @@ const client = new Client({
 
 const activeChats = new Map();
 
-client.on('qr', (qr) => {
-  qrcodeTerminal.generate(qr, { small: true });
-  QRCode.toDataURL(qr, (err, url) => {
-    if (!err) {
-      currentQrDataUrl = url;
-      serverStatus = 'ממתין לסריקת קוד QR מהטלפון';
-      addLog('קוד QR מוכן לסריקה באתר!');
-    }
-  });
-});
-
 client.on('ready', async () => {
   serverStatus = 'מחובר לוואטסאפ ומאזין 24/7!';
-  currentQrDataUrl = null;
+  currentPairingCode = null;
   addLog('וואטסאפ אומת בהצלחה!');
   const all = await client.getChats();
   await syncGroupsAlphabetically(all);
@@ -211,7 +217,7 @@ client.on('message', async (msg) => {
       fs.writeFileSync(raw, Buffer.from(media.data, 'base64'));
       await convertToIvrWav(raw, targetWav);
       await yemot.uploadFile(targetWav, `ivr2:${g.extension}/${yemot.getNextFileName(g.extension)}`);
-      try { fs.unlinkSync(raw); fs.unlinkSync(targetWav); } catch(e) {}
+      try { fs.unlinkSync(raw); fs.unlinkSync(targetWav); } catch (e) {}
       addLog(`שמע עלה לשלוחה ${g.extension} (${g.name})`);
       return;
     }
@@ -220,7 +226,7 @@ client.on('message', async (msg) => {
     if (text?.trim()) {
       await textToSpeechWav(text, targetWav);
       await yemot.uploadFile(targetWav, `ivr2:${g.extension}/${yemot.getNextFileName(g.extension)}`);
-      try { fs.unlinkSync(targetWav); } catch(e) {}
+      try { fs.unlinkSync(targetWav); } catch (e) {}
       addLog(`הודעה עלתה לשלוחה ${g.extension} (${g.name})`);
     }
   } catch(e) {}
@@ -239,7 +245,7 @@ function startListener() {
           await convertToMp3(item.path, mp3);
           await client.sendMessage(`${num}@c.us`, MessageMedia.fromFilePath(mp3), { sendAudioAsVoice: true });
           addLog(`הקלטה נשלחה למספר ${num}`);
-          try { fs.unlinkSync(item.path); fs.unlinkSync(mp3); } catch(e) {}
+          try { fs.unlinkSync(item.path); fs.unlinkSync(mp3); } catch (e) {}
         }
       }
     } catch(e) {}
@@ -254,10 +260,10 @@ function startListener() {
             await convertToMp3(item.path, mp3);
             await chat.sendMessage(MessageMedia.fromFilePath(mp3), { sendAudioAsVoice: true });
             addLog(`תגובה נשלחה לקבוצת ${chat.name}`);
-            try { fs.unlinkSync(item.path); fs.unlinkSync(mp3); } catch(e) {}
+            try { fs.unlinkSync(item.path); fs.unlinkSync(mp3); } catch (e) {}
           }
         }
-      } catch(e) {}
+      } catch (e) {}
     }
   }, CONFIG.yemot.pollIntervalSeconds * 1000);
 }
