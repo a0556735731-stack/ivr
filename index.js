@@ -1,231 +1,265 @@
+const express = require('express');
+const QRCode = require('qrcode');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
-const path = require('path');
+const qrcodeTerminal = require('qrcode-terminal');
+const axios = require('axios');
+const FormData = require('form-data');
+const googleTTS = require('google-tts-api');
+const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
+const path = require('path');
+const https = require('https');
 
-const config = require('./config');
-const yemotClient = require('./yemotClient');
-const groupsManager = require('./groupsManager');
-const webDashboard = require('./webDashboard');
-const { textToSpeech } = require('./ttsService');
-const { convertToIvrAudio, convertIvrToWhatsAppAudio } = require('./audioConverter');
+const CONFIG = {
+  port: process.env.PORT || 3000,
+  targetGroups: process.env.TARGET_GROUPS ? process.env.TARGET_GROUPS.split(',').map(s => s.trim()) : ['הפרגוד', 'חדשות', 'נייעס', 'מבזקים'],
+  yemot: {
+    apiUrl: 'https://www.call2all.co.il/ym/api',
+    username: process.env.YEMOT_USERNAME || '0772290423',
+    password: process.env.YEMOT_PASSWORD || '217056',
+    token: '',
+    maxFilesPerGroup: 30,
+    pollIntervalSeconds: 15,
+  },
+  directSend: { enabled: true, extension: '0', recordingExtension: '0' },
+  tempDir: './temp_audio'
+};
 
-if (!fs.existsSync(config.tempDir)) {
-  fs.mkdirSync(config.tempDir, { recursive: true });
+if (!fs.existsSync(CONFIG.tempDir)) fs.mkdirSync(CONFIG.tempDir, { recursive: true });
+
+const app = express();
+let serverStatus = 'מתאתחל... מחכה לחיבור וואטסאפ';
+let currentQrDataUrl = null;
+const activityLogs = [];
+
+function addLog(msg) {
+  const time = new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' });
+  activityLogs.unshift({ time, msg });
+  if (activityLogs.length > 50) activityLogs.pop();
+  console.log(`[${time}] ${msg}`);
 }
 
-console.log('================================================================');
-console.log('📞 גשר וואטסאפ לקו קולי (עם שלוחה 0 לשליחה ישירה למספר חדש)');
-console.log('================================================================');
+app.get('/', (req, res) => {
+  const isConnected = serverStatus.includes('מחובר');
+  res.send(`<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ניהול קו קולי</title><style>body{font-family:sans-serif;background:#f0f2f5;padding:15px;margin:0}.card{background:#fff;border-radius:16px;padding:20px;max-width:480px;margin:0 auto 20px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,.08)}h1{color:#128C7E;font-size:20px}.status{padding:6px 14px;border-radius:20px;font-weight:bold;margin:10px 0;display:inline-block;background:${isConnected?'#e8f5e9':'#fff8e1'};color:${isConnected?'#2e7d32':'#f57f17'}}.qr-box img{max-width:250px;border-radius:12px;border:2px solid #ddd}.logs{text-align:right;font-size:13px;max-height:250px;overflow-y:auto;background:#263238;color:#eceff1;padding:12px;border-radius:10px;font-family:monospace}</style></head><body><div class="card"><h1>📞 גשר וואטסאפ לקו קולי</h1><p style="color:#666;font-size:14px">קו פעיל: 077-2290423</p><div class="status">● ${serverStatus}</div>${!isConnected&&currentQrDataUrl?`<div class="qr-box"><p>סרוק קוד לחיבור וואטסאפ:</p><img src="${currentQrDataUrl}"></div>`:''}${isConnected?'<div style="padding:20px 0"><span style="font-size:40px">🎉</span><h3>המערכת פעילה ומאזינה!</h3></div>':''}</div><div class="card"><h3 style="text-align:right">יומן פעילות</h3><div class="logs">${activityLogs.map(l=>`<div>[${l.time}] ${l.msg}</div>`).join('')||'ממתין לפעולות...'}</div></div></body></html>`);
+});
+
+app.listen(CONFIG.port, () => {
+  addLog(`שרת האינטרנט פעיל על פורט ${CONFIG.port}`);
+});
+
+class YemotClient {
+  constructor() { this.token = ''; this.counters = {}; }
+  async login() {
+    if (this.token) return this.token;
+    try {
+      const res = await axios.get(`${CONFIG.yemot.apiUrl}/Login`, { params: { username: CONFIG.yemot.username, password: CONFIG.yemot.password } });
+      if (res.data?.token) return (this.token = res.data.token);
+    } catch(e) {}
+    return null;
+  }
+  getNextFileName(ext) {
+    if (!this.counters[ext]) this.counters[ext] = 1;
+    const name = `${String(this.counters[ext]).padStart(3, '0')}.wav`;
+    this.counters[ext] = (this.counters[ext] % CONFIG.yemot.maxFilesPerGroup) + 1;
+    return name;
+  }
+  async uploadFile(localPath, destPath) {
+    const token = await this.login();
+    if (!token || !fs.existsSync(localPath)) return false;
+    const form = new FormData();
+    form.append('token', token); form.append('path', destPath);
+    form.append('file', fs.createReadStream(localPath), { filename: path.basename(destPath), contentType: 'audio/wav' });
+    try {
+      const res = await axios.post(`${CONFIG.yemot.apiUrl}/UploadFile`, form, { headers: form.getHeaders() });
+      return res.data?.responseStatus === 'OK';
+    } catch(e) { return false; }
+  }
+  async checkAndDownloadRecordings(ext) {
+    const token = await this.login();
+    if (!token) return [];
+    try {
+      const res = await axios.get(`${CONFIG.yemot.apiUrl}/GetIVR2Dir`, { params: { token, path: `ivr2:${ext}` } });
+      const files = res.data?.files || [];
+      const results = [];
+      for (const f of files) {
+        if (f.name?.endsWith('.wav') && !f.name.startsWith('M0000')) {
+          const dest = path.join(CONFIG.tempDir, `rec_${Date.now()}_${f.name}`);
+          const writer = fs.createWriteStream(dest);
+          const dl = await axios({ method: 'get', url: `${CONFIG.yemot.apiUrl}/DownloadFile?token=${token}&path=ivr2:${ext}/${f.name}`, responseType: 'stream' });
+          await new Promise((res, rej) => { dl.data.pipe(writer); writer.on('finish', res); writer.on('error', rej); });
+          await axios.get(`${CONFIG.yemot.apiUrl}/DeleteFile`, { params: { token, path: `ivr2:${ext}/${f.name}` } }).catch(()=>{});
+          results.push({ path: dest, name: f.name });
+        }
+      }
+      return results;
+    } catch(e) { return []; }
+  }
+}
+
+const yemot = new YemotClient();
+
+function convertToIvrWav(inputPath, outputPath) {
+  return new Promise((res, rej) => {
+    ffmpeg(inputPath).noVideo().toFormat('wav').audioCodec('pcm_s16le').audioChannels(1).audioFrequency(8000).on('error', rej).on('end', () => res(outputPath)).save(outputPath);
+  });
+}
+
+function convertToMp3(inputPath, outputPath) {
+  return new Promise((res, rej) => {
+    ffmpeg(inputPath).toFormat('mp3').audioBitrate(64).audioChannels(1).on('error', rej).on('end', () => res(outputPath)).save(outputPath);
+  });
+}
+
+async function textToSpeechWav(text, outputPath) {
+  let clean = (text || '').replace(/https?:\/\/\S+/gi, ' קישור ').replace(/\n+/g, '. ').trim();
+  if (clean.length > 400) clean = clean.substring(0, 397) + '...';
+  const url = googleTTS.getAudioUrl(clean, { lang: 'he', slow: false, host: 'https://translate.google.com' });
+  const rawMp3 = path.join(CONFIG.tempDir, `tts_${Date.now()}.mp3`);
+  await new Promise((res, rej) => {
+    const file = fs.createWriteStream(rawMp3);
+    https.get(url, r => { r.pipe(file); file.on('finish', () => file.close(res)); }).on('error', rej);
+  });
+  await convertToIvrWav(rawMp3, outputPath);
+  try { fs.unlinkSync(rawMp3); } catch(e) {}
+  return outputPath;
+}
+
+let groupsMap = [
+  { name: 'הפרגוד', extension: '1', recordingExtension: '1/9' },
+  { name: 'חדשות', extension: '2', recordingExtension: '2/9' },
+  { name: 'נייעס', extension: '3', recordingExtension: '3/9' }
+];
+
+async function syncGroupsAlphabetically(allChats) {
+  const matched = [];
+  for (const c of allChats) {
+    if (c.isGroup && CONFIG.targetGroups.some(t => c.name.toLowerCase().includes(t.toLowerCase()))) {
+      matched.push(c.name.trim());
+    }
+  }
+  if (matched.length > 0) {
+    matched.sort((a, b) => a.localeCompare(b, 'he'));
+    groupsMap = matched.map((name, i) => ({ name, extension: (i + 1).toString(), recordingExtension: `${i + 1}/9` }));
+  }
+  addLog('השלוחות מוינו לפי א-ב: ' + groupsMap.map(g => `${g.extension}=${g.name}`).join(', '));
+  try {
+    for (const g of groupsMap) {
+      const p = path.join(CONFIG.tempDir, `M0000_${g.extension}.wav`);
+      await textToSpeechWav(`קבוצת ${g.name}`, p);
+      await yemot.uploadFile(p, `ivr2:${g.extension}/M0000.wav`);
+      try { fs.unlinkSync(p); } catch(e) {}
+    }
+    const p0 = path.join(CONFIG.tempDir, 'M0000_0.wav');
+    await textToSpeechWav('נא הקישו מספר טלפון לשליחת הודעה, ובסיום סולמית. לאחר מכן השאירו הודעה.', p0);
+    await yemot.uploadFile(p0, 'ivr2:0/M0000.wav');
+    try { fs.unlinkSync(p0); } catch(e) {}
+    let menu = 'ברוכים הבאים לקו העדכונים. לשליחת הודעה קולית למספר וואטסאפ חדש, הקישו 0. ';
+    groupsMap.forEach(g => { menu += `לשמיעת עדכוני ${g.name}, הקישו ${g.extension}. `; });
+    const pRoot = path.join(CONFIG.tempDir, 'M0000_root.wav');
+    await textToSpeechWav(menu, pRoot);
+    await yemot.uploadFile(pRoot, 'ivr2:M0000.wav');
+    try { fs.unlinkSync(pRoot); } catch(e) {}
+  } catch(e) {}
+}
 
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
-  puppeteer: {
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-  }
+  puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] }
 });
 
-const activeGroupChats = new Map();
+const activeChats = new Map();
 
 client.on('qr', (qr) => {
-  qrcode.generate(qr, { small: true });
-  webDashboard.setQr(qr);
+  qrcodeTerminal.generate(qr, { small: true });
+  QRCode.toDataURL(qr, (err, url) => {
+    if (!err) {
+      currentQrDataUrl = url;
+      serverStatus = 'ממתין לסריקת קוד QR מהטלפון';
+      addLog('קוד QR מוכן לסריקה באתר!');
+    }
+  });
 });
 
 client.on('ready', async () => {
-  console.log('🚀 המערכת מחוברת לוואטסאפ!');
-  webDashboard.setConnected();
-
-  const allChats = await client.getChats();
-  const sortedMap = await groupsManager.syncAndSortAlphabetically(allChats);
-
-  for (const group of sortedMap) {
-    const chat = allChats.find(c => c.isGroup && c.name.toLowerCase().includes(group.name.toLowerCase()));
-    if (chat) activeGroupChats.set(group.name, chat);
+  serverStatus = 'מחובר לוואטסאפ ומאזין 24/7!';
+  currentQrDataUrl = null;
+  addLog('וואטסאפ אומת בהצלחה!');
+  const all = await client.getChats();
+  await syncGroupsAlphabetically(all);
+  for (const g of groupsMap) {
+    const c = all.find(item => item.isGroup && item.name.toLowerCase().includes(g.name.toLowerCase()));
+    if (c) activeChats.set(g.name, c);
   }
-
-  await groupsManager.setupVoicePrompts();
-  startPhoneRecordingListener();
+  startListener();
 });
 
-async function canSendToGroup(chat) {
-  if (chat.isReadOnly) return false;
-  if (chat.groupMetadata && chat.groupMetadata.announce) {
-    const myId = client.info?.wid?._serialized;
-    const me = chat.groupMetadata.participants.find(p => p.id._serialized === myId);
-    if (!me || (!me.isAdmin && !me.isSuperAdmin)) return false;
-  }
-  return true;
-}
-
-/**
- * מנרמל מספר טלפון ישראלי לפורמט וואטסאפ בינלאומי (למשל: 0521234567 -> 972521234567@c.us)
- */
-function normalizePhoneNumber(rawNumber) {
-  if (!rawNumber) return null;
-  let cleaned = rawNumber.replace(/\D/g, '');
-  if (cleaned.startsWith('05')) {
-    cleaned = '972' + cleaned.substring(1);
-  } else if (cleaned.startsWith('5')) {
-    cleaned = '972' + cleaned;
-  }
-  if (cleaned.length >= 11 && cleaned.startsWith('972')) {
-    return `${cleaned}@c.us`;
-  }
-  return null;
-}
-
-async function processIncomingWhatsAppMessage(msg) {
+client.on('message', async (msg) => {
   try {
     const chat = await msg.getChat();
     if (!chat.isGroup) return;
+    const g = groupsMap.find(item => chat.name.toLowerCase().includes(item.name.toLowerCase()));
+    if (!g) return;
+    activeChats.set(g.name, chat);
+    const ts = Date.now();
+    const targetWav = path.join(CONFIG.tempDir, `ivr_${ts}.wav`);
 
-    const groupConfig = groupsManager.getGroupConfig(chat.name);
-    if (!groupConfig) return;
-
-    activeGroupChats.set(groupConfig.name, chat);
-
-    const timestamp = Date.now();
-    const targetExtension = groupConfig.extension;
-    const isReplyAllowed = await canSendToGroup(chat);
-    const statusText = isReplyAllowed ? 'פתוחה לתגובות' : 'סגורה (השתקה)';
-
-    webDashboard.addLog(`הודעה מקבוצת "${chat.name}" [שלוחה ${targetExtension} לפי א-ב | ${statusText}]`);
-
-    // 1. שמע, הודעה קולית או סרטון וידאו (חילוץ שמע)
     if (msg.hasMedia && (msg.type === 'audio' || msg.type === 'ptt' || msg.type === 'voice' || msg.type === 'video')) {
-      const isVideo = msg.type === 'video';
-      webDashboard.addLog(isVideo ? `מחלץ פס-קול מסרטון מקבוצת "${chat.name}"...` : `מעבד הודעה קולית לשלוחה ${targetExtension}...`);
-
       const media = await msg.downloadMedia();
-      if (!media || !media.data) return;
-
-      const inputExt = isVideo ? 'mp4' : (media.mimetype.includes('ogg') ? 'ogg' : 'mp3');
-      const rawInputPath = path.join(config.tempDir, `raw_${timestamp}.${inputExt}`);
-      const ivrAudioPath = path.join(config.tempDir, `ivr_${timestamp}.wav`);
-
-      fs.writeFileSync(rawInputPath, Buffer.from(media.data, 'base64'));
-      await convertToIvrAudio(rawInputPath, ivrAudioPath);
-      await yemotClient.uploadAudioToExtension(ivrAudioPath, targetExtension);
-
-      webDashboard.addLog(`השמע עלה בהצלחה לשלוחה ${targetExtension} (${groupConfig.name})!`);
-
-      try {
-        fs.unlinkSync(rawInputPath);
-        fs.unlinkSync(ivrAudioPath);
-      } catch (e) {}
+      if (!media?.data) return;
+      const raw = path.join(CONFIG.tempDir, `raw_${ts}.${msg.type === 'video' ? 'mp4' : 'ogg'}`);
+      fs.writeFileSync(raw, Buffer.from(media.data, 'base64'));
+      await convertToIvrWav(raw, targetWav);
+      await yemot.uploadFile(targetWav, `ivr2:${g.extension}/${yemot.getNextFileName(g.extension)}`);
+      try { fs.unlinkSync(raw); fs.unlinkSync(targetWav); } catch(e) {}
+      addLog(`שמע עלה לשלוחה ${g.extension} (${g.name})`);
       return;
     }
 
-    // 2. הודעת טקסט או כיתוב תמונה
-    let messageText = msg.body || msg.caption;
-    if (messageText && messageText.trim().length > 0) {
-      webDashboard.addLog(`הקראת טקסט מקבוצת "${chat.name}": "${messageText.substring(0, 30)}..."`);
-
-      const ttsMp3Path = path.join(config.tempDir, `tts_${timestamp}.mp3`);
-      const ivrAudioPath = path.join(config.tempDir, `ivr_${timestamp}.wav`);
-
-      await textToSpeech(messageText, chat.name, ttsMp3Path);
-      await convertToIvrAudio(ttsMp3Path, ivrAudioPath);
-      await yemotClient.uploadAudioToExtension(ivrAudioPath, targetExtension);
-
-      webDashboard.addLog(`הודעה הוקראה ועלתה לשלוחה ${targetExtension} (${groupConfig.name})!`);
-
-      try {
-        fs.unlinkSync(ttsMp3Path);
-        fs.unlinkSync(ivrAudioPath);
-      } catch (e) {}
+    const text = msg.body || msg.caption;
+    if (text?.trim()) {
+      await textToSpeechWav(text, targetWav);
+      await yemot.uploadFile(targetWav, `ivr2:${g.extension}/${yemot.getNextFileName(g.extension)}`);
+      try { fs.unlinkSync(targetWav); } catch(e) {}
+      addLog(`הודעה עלתה לשלוחה ${g.extension} (${g.name})`);
     }
-  } catch (error) {
-    webDashboard.addLog(`שגיאה: ${error.message}`);
-  }
-}
-
-function startPhoneRecordingListener() {
-  const intervalMs = (config.yemot.pollIntervalSeconds || 15) * 1000;
-
-  setInterval(async () => {
-    // -------------------------------------------------------------
-    // א. טיפול בשלוחה 0: שליחת הודעה קולית למספר וואטסאפ חדש לפי הקשות
-    // -------------------------------------------------------------
-    if (config.directSend && config.directSend.enabled) {
-      try {
-        const directRecordings = await yemotClient.checkAndDownloadNewRecordings(config.directSend.recordingExtension);
-        for (const item of directRecordings) {
-          // חילוץ מספר הטלפון משם הקובץ (למשל: 0521234567.wav או 0521234567_001.wav)
-          const numberMatch = item.fileName.match(/(\d{9,12})/);
-          if (numberMatch) {
-            const rawDigits = numberMatch[1];
-            const targetJid = normalizePhoneNumber(rawDigits);
-
-            if (targetJid) {
-              webDashboard.addLog(`📞 מזהה הקלטה למספר חדש: ${rawDigits}. ממיר ושולח לוואטסאפ...`);
-              const convertedMp3 = path.join(config.tempDir, `direct_${Date.now()}.mp3`);
-              await convertIvrToWhatsAppAudio(item.localPath, convertedMp3);
-
-              const media = MessageMedia.fromFilePath(convertedMp3);
-              await client.sendMessage(targetJid, media, { sendAudioAsVoice: true });
-              webDashboard.addLog(`✅ ההודעה הקולית נשלחה בהצלחה למספר ${rawDigits}!`);
-
-              try {
-                fs.unlinkSync(item.localPath);
-                fs.unlinkSync(convertedMp3);
-              } catch (e) {}
-            }
-          }
-        }
-      } catch (err) {}
-    }
-
-    // -------------------------------------------------------------
-    // ב. טיפול בשלוחות הקבוצות: שליחת הקלטות חזרה לקבוצה המקורית
-    // -------------------------------------------------------------
-    const allGroups = groupsManager.getAllGroups();
-    for (const group of allGroups) {
-      if (!group.recordingExtension) continue;
-
-      try {
-        const newRecordings = await yemotClient.checkAndDownloadNewRecordings(group.recordingExtension);
-
-        for (const item of newRecordings) {
-          let chat = activeGroupChats.get(group.name);
-          if (!chat) {
-            const allChats = await client.getChats();
-            chat = allChats.find(c => c.isGroup && c.name.toLowerCase().includes(group.name.toLowerCase()));
-            if (chat) activeGroupChats.set(group.name, chat);
-          }
-
-          if (!chat) continue;
-
-          const isAllowed = await canSendToGroup(chat);
-          if (!isAllowed) {
-            webDashboard.addLog(`קבוצת "${chat.name}" סגורה להודעות. ההקלטה לא נשלחה.`);
-            try { fs.unlinkSync(item.localPath); } catch (e) {}
-            continue;
-          }
-
-          webDashboard.addLog(`שולח הקלטה קולית מהטלפון לקבוצת "${chat.name}"...`);
-          const convertedMp3 = path.join(config.tempDir, `send_${Date.now()}.mp3`);
-          await convertIvrToWhatsAppAudio(item.localPath, convertedMp3);
-
-          const media = MessageMedia.fromFilePath(convertedMp3);
-          await chat.sendMessage(media, { sendAudioAsVoice: true });
-
-          webDashboard.addLog(`✅ ההקלטה נשלחה בהצלחה לקבוצה "${chat.name}"!`);
-
-          try {
-            fs.unlinkSync(item.localPath);
-            fs.unlinkSync(convertedMp3);
-          } catch (e) {}
-        }
-      } catch (err) {}
-    }
-  }, intervalMs);
-}
-
-client.on('message', async (msg) => {
-  await processIncomingWhatsAppMessage(msg);
+  } catch(e) {}
 });
+
+function startListener() {
+  setInterval(async () => {
+    try {
+      const recs0 = await yemot.checkAndDownloadRecordings('0');
+      for (const item of recs0) {
+        const match = item.name.match(/(\d{9,12})/);
+        if (match) {
+          let num = match[1];
+          if (num.startsWith('05')) num = '972' + num.substring(1);
+          const mp3 = path.join(CONFIG.tempDir, `snd_${Date.now()}.mp3`);
+          await convertToMp3(item.path, mp3);
+          await client.sendMessage(`${num}@c.us`, MessageMedia.fromFilePath(mp3), { sendAudioAsVoice: true });
+          addLog(`הקלטה נשלחה למספר ${num}`);
+          try { fs.unlinkSync(item.path); fs.unlinkSync(mp3); } catch(e) {}
+        }
+      }
+    } catch(e) {}
+
+    for (const g of groupsMap) {
+      try {
+        const recs = await yemot.checkAndDownloadRecordings(g.recordingExtension);
+        for (const item of recs) {
+          const chat = activeChats.get(g.name);
+          if (chat && !chat.isReadOnly) {
+            const mp3 = path.join(CONFIG.tempDir, `snd_${Date.now()}.mp3`);
+            await convertToMp3(item.path, mp3);
+            await chat.sendMessage(MessageMedia.fromFilePath(mp3), { sendAudioAsVoice: true });
+            addLog(`תגובה נשלחה לקבוצת ${chat.name}`);
+            try { fs.unlinkSync(item.path); fs.unlinkSync(mp3); } catch(e) {}
+          }
+        }
+      } catch(e) {}
+    }
+  }, CONFIG.yemot.pollIntervalSeconds * 1000);
+}
 
 client.initialize();
