@@ -11,4 +11,4 @@ RUN npm install --production
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "node src/index.js || node index.js"]
+CMD ["node", "index.js"]
