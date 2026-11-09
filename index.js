@@ -1,3 +1,6 @@
+process.on('uncaughtException', (err) => console.error('Caught:', err.message));
+process.on('unhandledRejection', (reason) => console.error('Rejection:', reason));
+
 const express = require('express');
 const QRCode = require('qrcode');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
@@ -31,8 +34,7 @@ const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-let serverStatus = 'מתאתחל... מחכה לחיבור וואטסאפ';
-let currentQrDataUrl = null;
+let serverStatus = 'מתאתחל... מחכה לקבלת מספר או סריקה';
 let currentPairingCode = null;
 const activityLogs = [];
 
@@ -45,7 +47,7 @@ function addLog(msg) {
 
 app.get('/', (req, res) => {
   const isConnected = serverStatus.includes('מחובר');
-  res.send(`<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ניהול קו קולי</title><style>body{font-family:sans-serif;background:#f0f2f5;padding:15px;margin:0}.card{background:#fff;border-radius:16px;padding:20px;max-width:480px;margin:0 auto 20px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,.08)}h1{color:#128C7E;font-size:20px}.status{padding:6px 14px;border-radius:20px;font-weight:bold;margin:10px 0;display:inline-block;background:${isConnected?'#e8f5e9':'#fff8e1'};color:${isConnected?'#2e7d32':'#f57f17'}}.box{background:#e0f2fe;border:2px dashed #0284c7;padding:15px;border-radius:12px;margin:15px 0}.code{font-size:32px;font-weight:800;letter-spacing:4px;color:#0369a1;background:#fff;padding:10px;border-radius:8px;margin:10px 0}input{width:80%;padding:12px;font-size:16px;border:1px solid #ccc;border-radius:8px;text-align:center;margin-bottom:10px}button{background:#128C7E;color:#fff;border:none;padding:12px 24px;font-size:16px;font-weight:bold;border-radius:8px;cursor:pointer}.logs{text-align:right;font-size:13px;max-height:250px;overflow-y:auto;background:#263238;color:#eceff1;padding:12px;border-radius:10px;font-family:monospace}</style></head><body><div class="card"><h1>📞 גשר וואטסאפ לקו קולי</h1><p style="color:#666;font-size:14px">קו פעיל: 077-2290423</p><div class="status">● ${serverStatus}</div>${!isConnected?`<div class="box"><h3 style="margin-top:0;color:#0369a1">🔑 חיבור בלי מצלמה ובלי חברים!</h3><p style="font-size:13px">הזן את מספר הטלפון שלך לקבלת קוד:</p><form method="POST" action="/pair"><input type="tel" name="phone" placeholder="0501234567" required value="${req.query.phone||''}"><br><button type="submit">קבל קוד לוואטסאפ</button></form>${currentPairingCode?`<div style="margin-top:15px"><p style="font-weight:bold;color:#0284c7">הקוד שלך:</p><div class="code">${currentPairingCode}</div><p style="font-size:13px;text-align:right">1. פתח וואטסאפ > הגדרות > מכשירים מקושרים > קשר מכשיר.<br>2. לחץ למטה על <b>"קישור באמצעות מספר הטלפון"</b>.<br>3. הקלד את הקוד <b>${currentPairingCode}</b>.</p></div>`:''}</div>`:''}</div><div class="card"><h3 style="text-align:right">יומן פעילות</h3><div class="logs">${activityLogs.map(l=>`<div>[${l.time}] ${l.msg}</div>`).join('')||'ממתין...'}</div></div></body></html>`);
+  res.send(`<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ניהול קו קולי</title><style>body{font-family:sans-serif;background:#f0f2f5;padding:15px;margin:0}.card{background:#fff;border-radius:16px;padding:20px;max-width:480px;margin:0 auto 20px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,.08)}h1{color:#128C7E;font-size:20px}.status{padding:6px 14px;border-radius:20px;font-weight:bold;margin:10px 0;display:inline-block;background:${isConnected?'#e8f5e9':'#fff8e1'};color:${isConnected?'#2e7d32':'#f57f17'}}.box{background:#e0f2fe;border:2px dashed #0284c7;padding:15px;border-radius:12px;margin:15px 0}.code{font-size:32px;font-weight:800;letter-spacing:4px;color:#0369a1;background:#fff;padding:10px;border-radius:8px;margin:10px 0}input{width:80%;padding:12px;font-size:16px;border:1px solid #ccc;border-radius:8px;text-align:center;margin-bottom:10px}button{background:#128C7E;color:#fff;border:none;padding:12px 24px;font-size:16px;font-weight:bold;border-radius:8px;cursor:pointer}.logs{text-align:right;font-size:13px;max-height:250px;overflow-y:auto;background:#263238;color:#eceff1;padding:12px;border-radius:10px;font-family:monospace}</style></head><body><div class="card"><h1>📞 גשר וואטסאפ לקו קולי</h1><p style="color:#666;font-size:14px">קו פעיל: 077-2290423</p><div class="status">● ${serverStatus}</div>${!isConnected?`<div class="box"><h3 style="margin-top:0;color:#0369a1">🔑 חיבור בלי מצלמה ובלי חברים!</h3><p style="font-size:13px">הזן את מספר הטלפון שלך לקבלת קוד:</p><form method="POST" action="/pair"><input type="tel" name="phone" placeholder="0501234567" required value="${req.query.phone||''}"><br><button type="submit">קבל קוד לוואטסאפ</button></form>${currentPairingCode?`<div style="margin-top:15px"><p style="font-weight:bold;color:#0284c7">הקוד שלך:</p><div class="code">${currentPairingCode}</div><p style="font-size:13px;text-align:right">1. פתח וואטסאפ > הגדרות > מכשירים מקושרים > קשר מכשיר.<br>2. לחץ למטה על <b>"קישור באמצעות מספר הטלפון"</b>.<br>3. הקלד את הקוד <b>${currentPairingCode}</b>.</p></div>`:''}</div>`:''}</div><div class="card"><h3 style="text-align:right">יומן פעילות</h3><div class="logs">${activityLogs.map(l=>`<div>[${l.time}] ${l.msg}</div>`).join('')||'ממתין לפעולות...'}</div></div></body></html>`);
 });
 
 app.post('/pair', async (req, res) => {
@@ -54,16 +56,20 @@ app.post('/pair', async (req, res) => {
   if (phone.startsWith('05')) phone = '972' + phone.substring(1);
   try {
     addLog(`מבקש קוד קישור עבור ${phone}...`);
-    const code = await client.requestPairingCode(phone);
-    currentPairingCode = code;
-    addLog(`קוד קישור התקבל: ${code}`);
+    if (client && client.requestPairingCode) {
+      const code = await client.requestPairingCode(phone);
+      currentPairingCode = code;
+      addLog(`קוד קישור התקבל: ${code}`);
+    }
   } catch(e) {
     addLog(`שגיאה בבקשת קוד: ${e.message}`);
   }
   res.redirect(`/?phone=${req.body.phone||''}`);
 });
 
-app.listen(CONFIG.port, () => addLog(`שרת פעיל על פורט ${CONFIG.port}`));
+app.listen(CONFIG.port, '0.0.0.0', () => {
+  addLog(`שרת האינטרנט זמין ומאזין על פורט ${CONFIG.port}`);
+});
 
 class YemotClient {
   constructor() { this.token = ''; this.counters = {}; }
@@ -159,7 +165,6 @@ async function syncGroupsAlphabetically(allChats) {
     matched.sort((a, b) => a.localeCompare(b, 'he'));
     groupsMap = matched.map((name, i) => ({ name, extension: (i + 1).toString(), recordingExtension: `${i + 1}/9` }));
   }
-  addLog('שלוחות לפי א-ב: ' + groupsMap.map(g => `${g.extension}=${g.name}`).join(', '));
   try {
     for (const g of groupsMap) {
       const p = path.join(CONFIG.tempDir, `M0000_${g.extension}.wav`);
@@ -182,7 +187,10 @@ async function syncGroupsAlphabetically(allChats) {
 
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
-  puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] }
+  puppeteer: {
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process']
+  }
 });
 
 const activeChats = new Map();
@@ -191,12 +199,14 @@ client.on('ready', async () => {
   serverStatus = 'מחובר לוואטסאפ ומאזין 24/7!';
   currentPairingCode = null;
   addLog('וואטסאפ אומת בהצלחה!');
-  const all = await client.getChats();
-  await syncGroupsAlphabetically(all);
-  for (const g of groupsMap) {
-    const c = all.find(item => item.isGroup && item.name.toLowerCase().includes(g.name.toLowerCase()));
-    if (c) activeChats.set(g.name, c);
-  }
+  try {
+    const all = await client.getChats();
+    await syncGroupsAlphabetically(all);
+    for (const g of groupsMap) {
+      const c = all.find(item => item.isGroup && item.name.toLowerCase().includes(g.name.toLowerCase()));
+      if (c) activeChats.set(g.name, c);
+    }
+  } catch(e) {}
   startListener();
 });
 
@@ -268,4 +278,4 @@ function startListener() {
   }, CONFIG.yemot.pollIntervalSeconds * 1000);
 }
 
-client.initialize();
+try { client.initialize(); } catch(e) {}
