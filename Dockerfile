@@ -1,7 +1,7 @@
 FROM ghcr.io/puppeteer/puppeteer:21.5.0
 
 USER root
-RUN apt-get update && apt-get install -y ffmpeg unzip && rm -rf /var/lib/apt/lists/*
+RUN rm -f /etc/apt/sources.list.d/google*.list && apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
