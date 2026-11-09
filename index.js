@@ -34,6 +34,7 @@ app.use(express.json());
 
 let serverStatus = 'מתאתחל...';
 let currentPairingCode = null;
+let pairingPhone = '';
 const activityLogs = [];
 
 function addLog(msg) {
@@ -45,24 +46,30 @@ function addLog(msg) {
 
 app.get('/', (req, res) => {
   const isConnected = serverStatus.includes('מחובר');
-  res.send(`<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ניהול קו קולי</title><style>body{font-family:sans-serif;background:#f0f2f5;padding:15px;margin:0;color:#111}.card{background:#fff;border-radius:16px;padding:20px;max-width:480px;margin:0 auto 20px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,.08)}h1{color:#128C7E;font-size:20px}.status{padding:6px 14px;border-radius:20px;font-weight:bold;margin:10px 0;display:inline-block;background:${isConnected?'#e8f5e9':'#fff8e1'};color:${isConnected?'#2e7d32':'#f57f17'}}.box{background:#e0f2fe;border:2px dashed #0284c7;padding:15px;border-radius:12px;margin:15px 0}.code{font-size:32px;font-weight:800;letter-spacing:4px;color:#0369a1;background:#fff;padding:10px;border-radius:8px;margin:10px 0}input{width:80%;padding:12px;font-size:16px;border:1px solid #ccc;border-radius:8px;text-align:center;margin-bottom:10px}button{background:#128C7E;color:#fff;border:none;padding:12px 24px;font-size:16px;font-weight:bold;border-radius:8px;cursor:pointer}.logs{text-align:right;font-size:13px;max-height:250px;overflow-y:auto;background:#263238;color:#eceff1;padding:12px;border-radius:10px;font-family:monospace}</style></head><body><div class="card"><h1>📞 גשר וואטסאפ לקו קולי</h1><p style="color:#666;font-size:14px">קו פעיל: 077-2290423</p><div class="status">● ${serverStatus}</div>${!isConnected?`<div class="box"><h3 style="margin-top:0;color:#0369a1">🔑 חיבור וואטסאפ</h3><p style="font-size:13px">הזן את מספר הטלפון לקבלת קוד:</p><form method="POST" action="/pair"><input type="tel" name="phone" placeholder="0556723061" required value="${req.query.phone||''}"><br><button type="submit">קבל קוד לוואטסאפ</button></form>${currentPairingCode?`<div style="margin-top:15px"><p style="font-weight:bold;color:#0284c7">הקוד שלך:</p><div class="code">${currentPairingCode}</div></div>`:''}</div>`:''}</div><div class="card"><h3 style="text-align:right">יומן פעילות</h3><div class="logs">${activityLogs.map(l=>`<div>[${l.time}] ${l.msg}</div>`).join('')||'ממתין...'}</div></div></body></html>`);
+  res.send(`<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">${!isConnected && pairingPhone && !currentPairingCode ? '<meta http-equiv="refresh" content="3">' : ''}<title>ניהול קו קולי</title><style>body{font-family:sans-serif;background:#f0f2f5;padding:15px;margin:0;color:#111}.card{background:#fff;border-radius:16px;padding:20px;max-width:480px;margin:0 auto 20px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,.08)}h1{color:#128C7E;font-size:20px}.status{padding:6px 14px;border-radius:20px;font-weight:bold;margin:10px 0;display:inline-block;background:${isConnected?'#e8f5e9':'#fff8e1'};color:${isConnected?'#2e7d32':'#f57f17'}}.box{background:#e0f2fe;border:2px dashed #0284c7;padding:15px;border-radius:12px;margin:15px 0}.code{font-size:32px;font-weight:800;letter-spacing:4px;color:#0369a1;background:#fff;padding:10px;border-radius:8px;margin:10px 0}input{width:80%;padding:12px;font-size:16px;border:1px solid #ccc;border-radius:8px;text-align:center;margin-bottom:10px}button{background:#128C7E;color:#fff;border:none;padding:12px 24px;font-size:16px;font-weight:bold;border-radius:8px;cursor:pointer}.logs{text-align:right;font-size:13px;max-height:250px;overflow-y:auto;background:#263238;color:#eceff1;padding:12px;border-radius:10px;font-family:monospace}</style></head><body><div class="card"><h1>📞 גשר וואטסאפ לקו קולי</h1><p style="color:#666;font-size:14px">קו פעיל: 077-2290423</p><div class="status">● ${serverStatus}</div>${!isConnected?`<div class="box"><h3 style="margin-top:0;color:#0369a1">🔑 חיבור וואטסאפ</h3><p style="font-size:13px">הזן את מספר הטלפון לקבלת קוד:</p><form method="POST" action="/pair"><input type="tel" name="phone" placeholder="0556723061" required value="${pairingPhone||''}"><br><button type="submit">קבל קוד לוואטסאפ</button></form>${currentPairingCode?`<div style="margin-top:15px"><p style="font-weight:bold;color:#0284c7">הקוד שלך (הקלד עכשיו בוואטסאפ):</p><div class="code">${currentPairingCode}</div><p style="font-size:13px">היכנס לוואטסאפ > מכשירים מקושרים > קשר מכשיר > קישור באמצעות מספר הטלפון והקלד את הקוד!</p></div>`:pairingPhone?'<p style="color:#0284c7;font-weight:bold">⏳ מבקש קוד מוואטסאפ... הדף מתרענן אוטומטית...</p>':''}</div>`:''}</div><div class="card"><h3 style="text-align:right">יומן פעילות</h3><div class="logs">${activityLogs.map(l=>`<div>[${l.time}]${l.msg}</div>`).join('')||'ממתין...'}</div></div></body></html>`);
 });
 
-app.post('/pair', async (req, res) => {
+app.post('/pair', (req, res) => {
   let phone = req.body.phone || '';
   phone = phone.replace(/\D/g, '');
   if (phone.startsWith('05')) phone = '972' + phone.substring(1);
-  try {
-    addLog(`מבקש קוד קישור עבור ${phone}...`);
-    if (client && client.requestPairingCode) {
-      const code = await client.requestPairingCode(phone);
-      currentPairingCode = code;
-      addLog(`קוד קישור התקבל: ${code}`);
+  pairingPhone = req.body.phone;
+  currentPairingCode = null;
+
+  addLog(`מבקש קוד קישור עבור ${phone}...`);
+  res.redirect('/');
+
+  setTimeout(async () => {
+    try {
+      if (client && client.requestPairingCode) {
+        const code = await client.requestPairingCode(phone);
+        currentPairingCode = code;
+        addLog(`✅ קוד קישור התקבל: ${code}`);
+      }
+    } catch(e) {
+      addLog(`שגיאה בבקשת קוד: ${e.message}`);
     }
-  } catch(e) {
-    addLog(`שגיאה בבקשת קוד: ${e.message}`);
-  }
-  res.redirect(`/?phone=${req.body.phone||''}`);
+  }, 100);
 });
 
 app.listen(CONFIG.port, '0.0.0.0', () => {
@@ -262,114 +269,3 @@ client.on('ready', async () => {
     await syncAllChatsAlphabetically(all);
   } catch(e) {}
   startListener();
-});
-
-client.on('message_create', async (msg) => {
-  try {
-    const chat = await msg.getChat();
-    const chatName = chat.name || (chat.id?.user || 'איש קשר');
-    activeChatsMap.set(chatName, chat);
-
-    const isGroup = chat.isGroup;
-    let targetEntry = null;
-
-    if (isGroup) {
-      targetEntry = groupsMap.find(g => chatName.toLowerCase().includes(g.name.toLowerCase()));
-      if (!targetEntry) {
-        const nextSub = (groupsMap.length + 1).toString();
-        targetEntry = { name: chatName, subExt: nextSub, path: `1/${nextSub}`, recordingPath: `1/${nextSub}/9` };
-        groupsMap.push(targetEntry);
-      }
-    } else {
-      targetEntry = contactsMap.find(c => chatName.toLowerCase().includes(c.name.toLowerCase()));
-      if (!targetEntry) {
-        const nextSub = (contactsMap.length + 1).toString();
-        targetEntry = { name: chatName, subExt: nextSub, path: `2/${nextSub}`, recordingPath: `2/${nextSub}/9` };
-        contactsMap.push(targetEntry);
-      }
-    }
-
-    const destFolder = targetEntry.path;
-    addLog(`הודעה מ-${isGroup ? 'קבוצת' : 'צ\'אט אישי'} "${chatName}" -> שלוחה ${destFolder}`);
-
-    const ts = Date.now();
-    const targetWav = path.join(CONFIG.tempDir, `ivr_${ts}.wav`);
-
-    if (msg.hasMedia && (msg.type === 'audio' || msg.type === 'ptt' || msg.type === 'voice' || msg.type === 'video')) {
-      const media = await msg.downloadMedia();
-      if (!media?.data) return;
-      const raw = path.join(CONFIG.tempDir, `raw_${ts}.${msg.type === 'video' ? 'mp4' : 'ogg'}`);
-      fs.writeFileSync(raw, Buffer.from(media.data, 'base64'));
-      await convertToIvrWav(raw, targetWav);
-      await yemot.uploadFile(targetWav, `ivr2:${destFolder}/${yemot.getNextFileName(destFolder)}`);
-      try { fs.unlinkSync(raw); fs.unlinkSync(targetWav); } catch (e) {}
-      addLog(`🎉 שמע עלה לשלוחה ${destFolder} ("${chatName}")!`);
-      return;
-    }
-
-    const text = msg.body || msg.caption;
-    if (text?.trim()) {
-      const formatted = `הודעה מאת ${chatName}: ${text}`;
-      await textToSpeechWav(formatted, targetWav);
-      await yemot.uploadFile(targetWav, `ivr2:${destFolder}/${yemot.getNextFileName(destFolder)}`);
-      try { fs.unlinkSync(targetWav); } catch (e) {}
-      addLog(`🎉 הודעה הוקראה ועלתה לשלוחה ${destFolder} ("${chatName}")!`);
-    }
-  } catch(e) {
-    addLog(`שגיאה בטיפול בהודעה: ${e.message}`);
-  }
-});
-
-function startListener() {
-  setInterval(async () => {
-    try {
-      const recs0 = await yemot.checkAndDownloadRecordings('0');
-      for (const item of recs0) {
-        const match = item.name.match(/(\d{9,12})/);
-        if (match) {
-          let num = match[1];
-          if (num.startsWith('05')) num = '972' + num.substring(1);
-          const mp3 = path.join(CONFIG.tempDir, `snd_${Date.now()}.mp3`);
-          await convertToMp3(item.path, mp3);
-          await client.sendMessage(`${num}@c.us`, MessageMedia.fromFilePath(mp3), { sendAudioAsVoice: true });
-          addLog(`הקלטה נשלחה למספר ${num}`);
-          try { fs.unlinkSync(item.path); fs.unlinkSync(mp3); } catch (e) {}
-        }
-      }
-    } catch(e) {}
-
-    for (const g of groupsMap) {
-      try {
-        const recs = await yemot.checkAndDownloadRecordings(g.recordingPath);
-        for (const item of recs) {
-          const chat = activeChatsMap.get(g.name);
-          if (chat && !chat.isReadOnly) {
-            const mp3 = path.join(CONFIG.tempDir, `snd_${Date.now()}.mp3`);
-            await convertToMp3(item.path, mp3);
-            await chat.sendMessage(MessageMedia.fromFilePath(mp3), { sendAudioAsVoice: true });
-            addLog(`תגובה קולית נשלחה לקבוצה "${g.name}"!`);
-            try { fs.unlinkSync(item.path); fs.unlinkSync(mp3); } catch (e) {}
-          }
-        }
-      } catch(e) {}
-    }
-
-    for (const c of contactsMap) {
-      try {
-        const recs = await yemot.checkAndDownloadRecordings(c.recordingPath);
-        for (const item of recs) {
-          const chat = activeChatsMap.get(c.name);
-          if (chat) {
-            const mp3 = path.join(CONFIG.tempDir, `snd_${Date.now()}.mp3`);
-            await convertToMp3(item.path, mp3);
-            await chat.sendMessage(MessageMedia.fromFilePath(mp3), { sendAudioAsVoice: true });
-            addLog(`תגובה קולית נשלחה לצ'אט האישי של "${c.name}"!`);
-            try { fs.unlinkSync(item.path); fs.unlinkSync(mp3); } catch (e) {}
-          }
-        }
-      } catch(e) {}
-    }
-  }, CONFIG.yemot.pollIntervalSeconds * 1000);
-}
-
-try { client.initialize(); } catch(e) {}
